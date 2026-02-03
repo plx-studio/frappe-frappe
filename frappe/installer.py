@@ -21,9 +21,10 @@ from frappe.utils.dashboard import sync_dashboards
 from frappe.utils.synchronization import filelock
 
 
-def _is_scheduler_enabled() -> bool:
+def _is_scheduler_enabled(site) -> bool:
 	enable_scheduler = False
 	try:
+		frappe.init(site=site)
 		frappe.connect()
 		enable_scheduler = cint(frappe.db.get_single_value("System Settings", "enable_scheduler"))
 	except Exception:
@@ -44,13 +45,14 @@ def _new_site(
 	install_apps=None,
 	source_sql=None,
 	force=False,
-	no_mariadb_socket=False,
 	reinstall=False,
 	db_password=None,
 	db_type=None,
 	db_host=None,
 	db_port=None,
 	setup_db=True,
+	mariadb_user_host_login_scope=None,
+	db_socket=None,
 ):
 	"""Install a new Frappe site"""
 
@@ -60,7 +62,7 @@ def _new_site(
 		print(f"Site {site} already exists")
 		sys.exit(1)
 
-	if no_mariadb_socket and not db_type == "mariadb":
+	if mariadb_user_host_login_scope and not db_type == "mariadb":
 		print("--no-mariadb-socket requires db_type to be set to mariadb.")
 		sys.exit(1)
 
@@ -78,7 +80,7 @@ def _new_site(
 
 	try:
 		# enable scheduler post install?
-		enable_scheduler = _is_scheduler_enabled()
+		enable_scheduler = _is_scheduler_enabled(site)
 	except Exception:
 		enable_scheduler = False
 
@@ -96,10 +98,11 @@ def _new_site(
 			reinstall=reinstall,
 			db_password=db_password,
 			db_type=db_type,
+			db_socket=db_socket,
 			db_host=db_host,
 			db_port=db_port,
-			no_mariadb_socket=no_mariadb_socket,
 			setup=setup_db,
+			mariadb_user_host_login_scope=mariadb_user_host_login_scope,
 		)
 
 		apps_to_install = ["frappe"] + (frappe.conf.get("install_apps") or []) + (list(install_apps) or [])
@@ -134,8 +137,9 @@ def install_db(
 	db_type=None,
 	db_host=None,
 	db_port=None,
-	no_mariadb_socket=False,
 	setup=True,
+	mariadb_user_host_login_scope=None,
+	db_socket=None,
 ):
 	import frappe.database
 	from frappe.database import bootstrap_database, setup_database
@@ -153,6 +157,7 @@ def install_db(
 		site_config=site_config,
 		db_password=db_password,
 		db_type=db_type,
+		db_socket=db_socket,
 		db_host=db_host,
 		db_port=db_port,
 	)
@@ -162,10 +167,9 @@ def install_db(
 	frappe.flags.root_password = root_password
 
 	if setup:
-		setup_database(force, verbose, no_mariadb_socket)
+		setup_database(force, verbose, mariadb_user_host_login_scope)
 
 	bootstrap_database(
-		db_name=frappe.conf.db_name,
 		verbose=verbose,
 		source_sql=source_sql,
 	)
@@ -259,6 +263,8 @@ def parse_app_name(name: str) -> str:
 		else:
 			_repo = name.rsplit("/", 2)[2]
 		repo = _repo.split(".", 1)[0]
+	elif name in frappe.get_all_apps():
+		return name
 	else:
 		_, repo, _ = fetch_details_from_tag(name)
 	return repo
@@ -332,6 +338,7 @@ def install_app(name, verbose=False, set_as_patched=True, force=False):
 	for after_sync in app_hooks.after_sync or []:
 		frappe.get_attr(after_sync)()  #
 
+	frappe.clear_cache()
 	frappe.flags.in_install = False
 
 
@@ -344,6 +351,9 @@ def add_to_installed_apps(app_name, rebuild_website=True):
 		if frappe.flags.in_install:
 			post_install(rebuild_website)
 
+	frappe.get_single("Installed Applications").update_versions()
+	frappe.db.commit()
+
 
 def remove_from_installed_apps(app_name):
 	installed_apps = frappe.get_installed_apps()
@@ -353,6 +363,8 @@ def remove_from_installed_apps(app_name):
 			"DefaultValue", {"defkey": "installed_apps"}, "defvalue", json.dumps(installed_apps)
 		)
 		_clear_cache("__global")
+		frappe.local.doc_events_hooks = None
+		frappe.get_single("Installed Applications").update_versions()
 		frappe.db.commit()
 		if frappe.flags.in_install:
 			post_install()
@@ -411,6 +423,7 @@ def remove_app(app_name, dry_run=False, yes=False, no_backup=False, force=False)
 		remove_from_installed_apps(app_name)
 		frappe.get_single("Installed Applications").update_versions()
 		frappe.db.commit()
+		frappe.clear_cache()
 
 	for after_uninstall in app_hooks.after_uninstall or []:
 		frappe.get_attr(after_uninstall)()
@@ -420,6 +433,9 @@ def remove_app(app_name, dry_run=False, yes=False, no_backup=False, force=False)
 
 	click.secho(f"Uninstalled App {app_name} from Site {site}", fg="green")
 	frappe.flags.in_uninstall = False
+
+	if not dry_run:
+		frappe.clear_cache()
 
 
 def _delete_modules(modules: list[str], dry_run: bool) -> list[str]:
@@ -441,6 +457,7 @@ def _delete_modules(modules: list[str], dry_run: bool) -> list[str]:
 
 			if not dry_run:
 				if doctype.issingle:
+					frappe.delete_doc(doctype.name, doctype.name, ignore_on_trash=True, force=True)
 					frappe.delete_doc("DocType", doctype.name, ignore_on_trash=True, force=True)
 				else:
 					drop_doctypes.append(doctype.name)
@@ -537,16 +554,38 @@ def init_singles():
 			continue
 
 
-def make_conf(db_name=None, db_password=None, site_config=None, db_type=None, db_host=None, db_port=None):
+def make_conf(
+	db_name=None,
+	db_password=None,
+	site_config=None,
+	db_type=None,
+	db_host=None,
+	db_port=None,
+	db_socket=None,
+):
 	site = frappe.local.site
-	make_site_config(db_name, db_password, site_config, db_type=db_type, db_host=db_host, db_port=db_port)
+	make_site_config(
+		db_name,
+		db_password,
+		site_config,
+		db_type=db_type,
+		db_host=db_host,
+		db_port=db_port,
+		db_socket=db_socket,
+	)
 	sites_path = frappe.local.sites_path
 	frappe.destroy()
 	frappe.init(site, sites_path=sites_path)
 
 
 def make_site_config(
-	db_name=None, db_password=None, site_config=None, db_type=None, db_host=None, db_port=None
+	db_name=None,
+	db_password=None,
+	site_config=None,
+	db_type=None,
+	db_socket=None,
+	db_host=None,
+	db_port=None,
 ):
 	frappe.create_folder(os.path.join(frappe.local.site_path))
 	site_file = get_site_config_path()
@@ -557,6 +596,9 @@ def make_site_config(
 
 			if db_type:
 				site_config["db_type"] = db_type
+
+			if db_socket:
+				site_config["db_socket"] = db_socket
 
 			if db_host:
 				site_config["db_host"] = db_host

@@ -418,8 +418,7 @@ def import_doc(context, path, force=False):
 	type=click.Path(exists=True, dir_okay=False, resolve_path=True),
 	required=True,
 	help=(
-		"Path to import file (.csv, .xlsx)."
-		"Consider that relative paths will resolve from 'sites' directory"
+		"Path to import file (.csv, .xlsx). Consider that relative paths will resolve from 'sites' directory"
 	),
 )
 @click.option("--doctype", type=str, required=True)
@@ -515,6 +514,7 @@ def _enter_console(extra_args=None):
 		os.environ["PSQL_HISTORY"] = os.path.abspath(get_site_path("logs", "postgresql_console.log"))
 
 	bin, args, bin_name = get_command(
+		socket=frappe.conf.db_socket,
 		host=frappe.conf.db_host,
 		port=frappe.conf.db_port,
 		user=frappe.conf.db_name,
@@ -782,12 +782,12 @@ def run_tests(
 			click.secho(f"bench --site {site} set-config allow_tests true", fg="green")
 			return
 
-		frappe.init(site=site)
-
+		frappe.init(site)  # init frappe.flags
 		frappe.flags.skip_before_tests = skip_before_tests
 		frappe.flags.skip_test_records = skip_test_records
 
 		ret = frappe.test_runner.main(
+			site,
 			app,
 			module,
 			doctype,
@@ -930,7 +930,11 @@ def run_ui_tests(
 		formatted_command += " " + " ".join(cypressargs)
 
 	click.secho("Running Cypress...", fg="yellow")
-	frappe.commands.popen(formatted_command, cwd=app_base_path, raise_err=True)
+	try:
+		frappe.commands.popen(formatted_command, cwd=app_base_path, raise_err=True)
+	except subprocess.CalledProcessError as e:
+		click.secho("Cypress tests failed", fg="red")
+		raise click.exceptions.Exit(1) from e
 
 
 @click.command("serve")
@@ -1024,6 +1028,14 @@ def request(context, args=None, path=None):
 @click.option("--no-git", is_flag=True, default=False, help="Do not initialize git repository for the app")
 def make_app(destination, app_name, no_git=False):
 	"Creates a boilerplate app"
+	from frappe.utils import get_sites
+
+	if app_name in get_sites():
+		click.secho(
+			f"Your bench has a site called {app_name}, please choose another name for the app.", fg="red"
+		)
+		sys.exit(1)
+
 	from frappe.utils.boilerplate import make_boilerplate
 
 	make_boilerplate(destination, app_name, no_git=no_git)

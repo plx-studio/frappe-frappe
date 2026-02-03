@@ -62,7 +62,7 @@ export default class Grid {
 	make() {
 		let template = `
 			<div class="grid-field">
-				<label class="control-label">${__(this.df.label || "")}</label>
+				<label class="control-label">${__(this.df.label || "", null, this.df.parent)}</label>
 				<span class="help"></span>
 				<p class="text-muted small grid-description"></p>
 				<div class="grid-custom-buttons"></div>
@@ -128,6 +128,7 @@ export default class Grid {
 		this.setup_add_row();
 
 		this.setup_grid_pagination();
+		this.update_idx_and_name();
 
 		this.custom_buttons = {};
 		this.grid_buttons = this.wrapper.find(".grid-buttons");
@@ -148,6 +149,21 @@ export default class Grid {
 		} else {
 			description_wrapper.hide();
 		}
+	}
+
+	update_idx_and_name() {
+		this.data.forEach((d, ri) => {
+			if (d.idx === undefined) {
+				d.idx = ri + 1;
+			}
+			if (d.name === undefined) {
+				d.name = this.get_random_name();
+			}
+		});
+	}
+
+	get_random_name() {
+		return Math.random().toString(36).slice(2, 10);
 	}
 
 	set_doc_url() {
@@ -352,6 +368,7 @@ export default class Grid {
 			frm: this.frm,
 			grid: this,
 			configure_columns: true,
+			header_row: true,
 		});
 
 		this.header_search = new GridRow({
@@ -470,7 +487,7 @@ export default class Grid {
 				d.idx = ri + 1;
 			}
 			if (d.name === undefined) {
-				d.name = "row " + d.idx;
+				d.name = this.get_random_name();
 			}
 			let grid_row;
 			if (this.grid_rows[ri] && !append_row) {
@@ -805,7 +822,8 @@ export default class Grid {
 	}
 
 	add_new_row(idx, callback, show, copy_doc, go_to_last_page = false, go_to_first_page = false) {
-		if (this.is_editable()) {
+		let cannot_add_rows = this.cannot_add_rows || (this.df && this.df.cannot_add_rows);
+		if (this.is_editable() && !cannot_add_rows) {
 			if (go_to_last_page) {
 				this.grid_pagination.go_to_last_page_to_add_row();
 			} else if (go_to_first_page) {
@@ -908,6 +926,7 @@ export default class Grid {
 		}
 
 		setTimeout(() => {
+			this.grid_rows[idx].toggle_editable_row(true);
 			this.grid_rows[idx].row
 				.find('input[type="Text"],textarea,select')
 				.filter(":visible:first")
@@ -1098,6 +1117,9 @@ export default class Grid {
 							var data = frappe.utils.csv_to_array(
 								frappe.utils.get_decoded_string(file.dataurl)
 							);
+							if (cint(data.length) - 7 > 5000) {
+								frappe.throw(__("Cannot import table with more than 5000 rows."));
+							}
 							// row #2 contains fieldnames;
 							var fieldnames = data[2];
 							me.frm.clear_table(me.df.fieldname);
@@ -1241,5 +1263,15 @@ export default class Grid {
 		}
 
 		this.debounced_refresh();
+	}
+
+	get_current_row(target) {
+		let current_row = null;
+		for (let i = 0; i < this.grid_rows.length; i++) {
+			if (this.grid_rows[i].wrapper.get(0).contains(target)) {
+				current_row = i;
+			}
+		}
+		return current_row;
 	}
 }

@@ -62,11 +62,13 @@ class Comment(Document):
 	def validate(self):
 		if not self.comment_email:
 			self.comment_email = frappe.session.user
-		self.content = frappe.utils.sanitize_html(self.content, always_sanitize=True)
+		self.content = frappe.utils.sanitize_html(
+			self.content, always_sanitize=True, disallowed_tags=["form", "input", "button"]
+		)
 
 	def on_update(self):
 		update_comment_in_doc(self)
-		if self.is_new():
+		if not self.is_new():
 			self.notify_change("update")
 
 	def on_trash(self):

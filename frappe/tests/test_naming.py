@@ -2,6 +2,7 @@
 # License: MIT. See LICENSE
 
 import time
+import unittest
 
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_full_jitter
 

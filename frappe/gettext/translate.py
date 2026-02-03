@@ -10,6 +10,7 @@ from babel.messages.catalog import Catalog
 from babel.messages.extract import DEFAULT_KEYWORDS, extract_from_dir
 from babel.messages.mofile import read_mo, write_mo
 from babel.messages.pofile import read_po, write_po
+from click import secho
 
 import frappe
 from frappe.utils import get_bench_path
@@ -136,6 +137,7 @@ def generate_pot(target_app: str | None = None):
 	for app in apps:
 		app_path = frappe.get_pymodule_path(app, "..")
 		catalog = new_catalog(app)
+		ignored_strings = _get_ignored_strings(app)
 
 		# Each file will only be processed by the first method that matches,
 		# so more specific methods should come first.
@@ -148,10 +150,61 @@ def generate_pot(target_app: str | None = None):
 			if not message:
 				continue
 
+			if (message, context) in ignored_strings:
+				continue
+
 			catalog.add(message, locations=[(filename, lineno)], auto_comments=comments, context=context)
 
 		pot_path = write_catalog(app, catalog)
 		print(f"POT file created at {pot_path}")
+
+
+def _get_ignored_strings(app: str) -> set[tuple[str, str | None]]:
+	"""Return a set of tuples (message, context) that should be excluded from the given app's POT file.
+
+	Example:
+	    If [app]/hooks.py contains:
+	        ignore_translatable_strings_from = ["frappe"]
+
+	    Then this will return a set of tuples (message, context) with all
+	    entries from frappe's POT file.
+	"""
+	ignored_strings = set()
+	for ignore_app in frappe.get_hooks("ignore_translatable_strings_from", [], app_name=app):
+		if ignore_app == app:
+			raise ValueError(
+				f"Invalid configuration: App '{app}' cannot ignore its own translatable strings. "
+				f"Remove '{app}' from the 'ignore_translatable_strings_from' hook in {app}/hooks.py to fix this."
+			)
+
+		try:
+			catalog = get_catalog(ignore_app)
+		except ModuleNotFoundError:
+			secho(
+				f"App '{ignore_app}' specified in '{app}/hooks.py' 'ignore_translatable_strings_from' hook is not installed. Skipping",
+				err=True,
+				fg="yellow",
+			)
+			continue
+		except ImportError:
+			secho(
+				f"App '{ignore_app}' specified in '{app}/hooks.py' 'ignore_translatable_strings_from' hook could not be imported. Skipping",
+				err=True,
+				fg="yellow",
+			)
+			continue
+		except AttributeError:
+			secho(
+				f"Site not initialized. Cannot load app '{ignore_app}' specified in '{app}/hooks.py' 'ignore_translatable_strings_from' hook. Skipping",
+				err=True,
+				fg="yellow",
+			)
+			continue
+
+		for message in catalog:
+			ignored_strings.add((message.id, message.context))
+
+	return ignored_strings
 
 
 def get_is_gitignored_function_for_app(app: str | None):
@@ -332,7 +385,7 @@ def escape_percent(s: str):
 	return s.replace("%", "&#37;")
 
 
-def update_csv_from_po(app: str, locale: str):
+def update_csv_from_po(app: str, locale: str | None = None):
 	"""Writes new strings from PO files to CSV
 
 	Steps:
@@ -345,25 +398,33 @@ def update_csv_from_po(app: str, locale: str):
 	6. Append the remaining translations from the catalog to the CSV file.
 	"""
 	generate_pot(app)
-	update_po(app, locale)
+	locales = [locale] if locale else get_locales(app)
 
-	catalog = get_catalog(app, locale)
-	csv_file = Path(frappe.get_app_path(app)) / "translations" / f"{locale.replace('_', '-')}.csv"
+	for _locale in locales:
+		csv_file = Path(frappe.get_app_path(app)) / "translations" / f"{_locale.replace('_', '-')}.csv"
 
-	if not csv_file.exists():
-		return
+		if not csv_file.exists():
+			continue
 
-	with open(csv_file) as f:
-		csv_translations = {(row[0], row[2] if len(row) > 2 else None): row[1] for row in csv.reader(f)}
+		update_po(app, _locale)
+		catalog = get_catalog(app, _locale)
 
-	for message in list(catalog):
-		if (message.id, message.context or "") in csv_translations or not message.string:
-			catalog.delete(message.id, message.context)
+		with open(csv_file) as f:
+			csv_translations = {(row[0], row[2] if len(row) > 2 else None): row[1] for row in csv.reader(f)}
 
-	with open(csv_file, "a") as f:
-		writer = csv.writer(f)
-		for message in catalog._messages.values():
-			if message.id == message.string or message.id == message.context or not message.id.strip():
-				continue
+		for message in list(catalog):
+			if (message.id, message.context or "") in csv_translations or not message.string:
+				catalog.delete(message.id, message.context)
 
-			writer.writerow([message.id, message.string, message.context or ""])
+		with open(csv_file, "a") as f:
+			writer = csv.writer(f)
+			for message in catalog._messages.values():
+				if (
+					message.id == message.string
+					or message.id == message.context
+					or not message.id.strip()
+					or not message.string.strip()
+				):
+					continue
+
+				writer.writerow([message.id, message.string, message.context or ""])

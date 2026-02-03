@@ -59,6 +59,7 @@ class EmailAccount(Document):
 		from frappe.types import DF
 
 		add_signature: DF.Check
+		always_bcc: DF.Data | None
 		always_use_account_email_id_as_sender: DF.Check
 		always_use_account_name_as_sender_name: DF.Check
 		append_emails_to_sent_folder: DF.Check
@@ -68,6 +69,7 @@ class EmailAccount(Document):
 		auth_method: DF.Literal["Basic", "OAuth"]
 		auto_reply_message: DF.TextEditor | None
 		awaiting_password: DF.Check
+		backend_app_flow: DF.Check
 		brand_logo: DF.AttachImage | None
 		connected_app: DF.Link | None
 		connected_user: DF.Link | None
@@ -95,15 +97,8 @@ class EmailAccount(Document):
 		password: DF.Password | None
 		send_notification_to: DF.SmallText | None
 		send_unsubscribe_message: DF.Check
-		service: DF.Literal[
-			"",
-			"GMail",
-			"Sendgrid",
-			"SparkPost",
-			"Yahoo Mail",
-			"Outlook.com",
-			"Yandex.Mail",
-		]
+		sent_folder_name: DF.Data | None
+		service: DF.Literal["", "GMail", "Sendgrid", "SparkPost", "Yahoo Mail", "Outlook.com", "Yandex.Mail"]
 		signature: DF.TextEditor | None
 		smtp_port: DF.Data | None
 		smtp_server: DF.Data | None
@@ -139,6 +134,9 @@ class EmailAccount(Document):
 				frappe.throw(_("Login Id is required"))
 		else:
 			self.login_id = None
+
+		if self.service == "Sendgrid":
+			self.login_id = "apikey"
 
 		# validate the imap settings
 		if self.enable_incoming and self.use_imap and len(self.imap_folder) <= 0:
@@ -402,7 +400,7 @@ class EmailAccount(Document):
 
 		if _raise_error:
 			frappe.throw(
-				_("Please setup default Email Account from Settings > Email Account"),
+				_("Please setup default outgoing Email Account from Tools > Email Account"),
 				frappe.OutgoingEmailError,
 			)
 
@@ -725,14 +723,22 @@ class EmailAccount(Document):
 		try:
 			email_server = self.get_incoming_server(in_receive=True)
 			message = safe_encode(message)
-			email_server.imap.append("Sent", "\\Seen", imaplib.Time2Internaldate(time.time()), message)
+			sent_folder_name = self.sent_folder_name or "Sent"
+			email_server.imap.append(
+				sent_folder_name, "\\Seen", imaplib.Time2Internaldate(time.time()), message
+			)
 		except Exception:
 			self.log_error("Unable to add to Sent folder")
 
 	def get_oauth_token(self):
 		if self.auth_method == "OAuth":
 			connected_app = frappe.get_doc("Connected App", self.connected_app)
-			return connected_app.get_active_token(self.connected_user)
+			if self.backend_app_flow:
+				token = connected_app.get_backend_app_token()
+			else:
+				token = connected_app.get_active_token(self.connected_user)
+
+			return token
 
 
 @frappe.whitelist()
@@ -822,6 +828,7 @@ def pull(now=False):
 		.select(
 			doctype.name,
 			doctype.auth_method,
+			doctype.backend_app_flow,
 			doctype.connected_app,
 			doctype.connected_user,
 		)
@@ -831,8 +838,10 @@ def pull(now=False):
 	)
 
 	for email_account in email_accounts:
-		if email_account.auth_method == "OAuth" and not has_token(
-			email_account.connected_app, email_account.connected_user
+		if (
+			email_account.auth_method == "OAuth"
+			and not email_account.backend_app_flow
+			and not has_token(email_account.connected_app, email_account.connected_user)
 		):
 			# don't try to pull from accounts which dont have access token (for Oauth)
 			continue
@@ -853,6 +862,20 @@ def pull(now=False):
 					job_name=job_name,
 					email_account=email_account.name,
 				)
+
+
+@frappe.whitelist()
+def pull_emails(email_account: str) -> None:
+	"""Pull emails from given email account."""
+	frappe.has_permission("Email Account", "read", throw=True)
+
+	job_name = f"pull_from_email_account|{email_account}"
+	queued_jobs = get_jobs(site=frappe.local.site, key="job_name")[frappe.local.site]
+
+	if job_name not in queued_jobs:
+		pull_from_email_account(email_account)
+	else:
+		frappe.msgprint(_("Emails are already being pulled from this account."))
 
 
 def pull_from_email_account(email_account):

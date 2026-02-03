@@ -27,7 +27,8 @@ class MariaDBExceptionUtil:
 
 	@staticmethod
 	def is_deadlocked(e: pymysql.Error) -> bool:
-		return e.args[0] == ER.LOCK_DEADLOCK
+		# Snapshot isolation is also treated as deadlock from User POV
+		return e.args[0] in (ER.LOCK_DEADLOCK, ER.CHECKREAD)
 
 	@staticmethod
 	def is_timedout(e: pymysql.Error) -> bool:
@@ -120,29 +121,42 @@ class MariaDBConnectionUtil:
 
 	def get_connection_settings(self) -> dict:
 		conn_settings = {
-			"host": self.host,
 			"user": self.user,
-			"password": self.password,
 			"conv": self.CONVERSION_MAP,
 			"charset": "utf8mb4",
+			"collation": "utf8mb4_unicode_ci",
 			"use_unicode": True,
 		}
 
 		if self.cur_db_name:
 			conn_settings["database"] = self.cur_db_name
 
-		if self.port:
-			conn_settings["port"] = int(self.port)
+		if self.socket:
+			conn_settings["unix_socket"] = self.socket
+		else:
+			conn_settings["host"] = self.host
+			if self.port:
+				conn_settings["port"] = int(self.port)
+
+		if self.password:
+			conn_settings["password"] = self.password
 
 		if frappe.conf.local_infile:
 			conn_settings["local_infile"] = frappe.conf.local_infile
 
-		if frappe.conf.db_ssl_ca and frappe.conf.db_ssl_cert and frappe.conf.db_ssl_key:
-			conn_settings["ssl"] = {
+		# Configure SSL settings
+		if frappe.conf.db_ssl_ca:
+			ssl_config = {
 				"ca": frappe.conf.db_ssl_ca,
-				"cert": frappe.conf.db_ssl_cert,
-				"key": frappe.conf.db_ssl_key,
+				"check_hostname": frappe.conf.db_ssl_check_hostname,
 			}
+
+			# Add client certificates for mutual SSL if available
+			if frappe.conf.db_ssl_cert and frappe.conf.db_ssl_key:
+				ssl_config.update({"cert": frappe.conf.db_ssl_cert, "key": frappe.conf.db_ssl_key})
+
+			conn_settings["ssl"] = ssl_config
+
 		return conn_settings
 
 
@@ -316,7 +330,7 @@ class MariaDBDatabase(MariaDBConnectionUtil, MariaDBExceptionUtil, Database):
 			`doctype` VARCHAR(180) NOT NULL,
 			`data` TEXT,
 			UNIQUE(user, doctype)
-			) ENGINE=InnoDB DEFAULT CHARSET=utf8"""
+			) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"""
 		)
 
 	@staticmethod
@@ -399,14 +413,27 @@ class MariaDBDatabase(MariaDBConnectionUtil, MariaDBExceptionUtil, Database):
 	def add_index(self, doctype: str, fields: list, index_name: str | None = None):
 		"""Creates an index with given fields if not already created.
 		Index name will be `fieldname1_fieldname2_index`"""
+		from frappe.custom.doctype.property_setter.property_setter import make_property_setter
+
 		index_name = index_name or self.get_index_name(fields)
 		table_name = get_table_name(doctype)
 		if not self.has_index(table_name, index_name):
 			self.commit()
 			self.sql(
 				"""ALTER TABLE `{}`
-				ADD INDEX `{}`({})""".format(table_name, index_name, ", ".join(fields))
+				ADD INDEX IF NOT EXISTS `{}`({})""".format(table_name, index_name, ", ".join(fields))
 			)
+			# Ensure that DB migration doesn't clear this index, assuming this is manually added
+			# via code or console.
+			if len(fields) == 1 and not (frappe.flags.in_install or frappe.flags.in_migrate):
+				make_property_setter(
+					doctype,
+					fields[0],
+					property="search_index",
+					value="1",
+					property_type="Check",
+					for_doctype=False,  # Applied on docfield
+				)
 
 	def add_unique(self, doctype, fields, constraint_name=None):
 		if isinstance(fields, str):
@@ -460,7 +487,7 @@ class MariaDBDatabase(MariaDBConnectionUtil, MariaDBExceptionUtil, Database):
 			tables = (
 				frappe.qb.from_(information_schema.tables)
 				.select(information_schema.tables.table_name)
-				.where(information_schema.tables.table_schema != "information_schema")
+				.where(information_schema.tables.table_schema == frappe.db.cur_db_name)
 				.run(pluck=True)
 			)
 			frappe.cache.set_value("db_tables", tables)
@@ -534,3 +561,12 @@ class MariaDBDatabase(MariaDBConnectionUtil, MariaDBExceptionUtil, Database):
 		finally:
 			self._cursor = original_cursor
 			new_cursor.close()
+
+	def estimate_count(self, doctype: str):
+		"""Get estimated count of total rows in a table."""
+		from frappe.utils.data import cint
+
+		table = get_table_name(doctype)
+
+		count = self.sql("select table_rows from information_schema.tables where table_name = %s", table)
+		return cint(count[0][0]) if count else 0

@@ -27,7 +27,7 @@
  "Algeria": {
   "code": "dz",
   "currency": "DZD",
-  "currency_fraction": "Santeem",
+  "currency_fraction": "Centime",
   "currency_fraction_units": 100,
   "currency_name": "Algerian Dinar",
   "currency_symbol": "\u062f.\u062c",
@@ -2599,6 +2599,8 @@
   "currency_name": "Swedish Krona",
   "currency_symbol": "kr",
   "number_format": "#.###,##",
+  "date_format": "yyyy-mm-dd",
+  "time_format": "HH:mm",
   "timezones": [
    "Europe/Stockholm"
   ],
@@ -2985,6 +2987,19 @@
    "Africa/Lusaka"
   ],
   "isd": "+260"
+ },
+ "Kosovo": {
+  "code": "xk",
+  "currency": "EUR",
+  "currency_fraction": "Cent",
+  "currency_fraction_units": 100,
+  "currency_name": "Euro",
+  "currency_symbol": "€",
+  "number_format": "#,###.##",
+  "timezones": [
+    "Europe/Belgrade"
+  ],
+  "isd": "+383"
  },
  "Zimbabwe": {
   "code": "zw",

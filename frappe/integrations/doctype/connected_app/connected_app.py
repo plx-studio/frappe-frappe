@@ -4,10 +4,12 @@
 import os
 from urllib.parse import urlencode, urljoin
 
+from oauthlib.oauth2 import BackendApplicationClient
 from requests_oauthlib import OAuth2Session
 
 import frappe
 from frappe import _
+from frappe.integrations.utils import make_get_request
 from frappe.model.document import Document
 
 if any((os.getenv("CI"), frappe.conf.developer_mode, frappe.conf.allow_tests)):
@@ -44,6 +46,12 @@ class ConnectedApp(Document):
 	"""Connect to a remote oAuth Server. Retrieve and store user's access token
 	in a Token Cache.
 	"""
+
+	@frappe.whitelist()
+	def get_openid_configuration(self):
+		if not self.openid_configuration:
+			frappe.throw(_("Please enter OpenID Configuration URL"))
+		return make_get_request(self.openid_configuration)
 
 	def validate(self):
 		base_url = frappe.utils.get_url()
@@ -143,6 +151,33 @@ class ConnectedApp(Document):
 				return None
 
 			token_cache.update_data(token)
+
+		return token_cache
+
+	def get_backend_app_token(self, include_client_id=None):
+		"""Get an Access Token for the Cloud-Registered Service Principal"""
+		# There is no User assigned to the app, so we give it an empty string,
+		# otherwise it will assign the logged in user.
+		token_cache = self.get_token_cache("")
+		if token_cache is None:
+			token_cache = frappe.new_doc("Token Cache")
+			token_cache.connected_app = self.name
+		elif not token_cache.is_expired():
+			return token_cache
+
+		# Get a new Access token for the App
+		client = BackendApplicationClient(client_id=self.client_id, scope=self.get_scopes())
+		oauth_session = OAuth2Session(client=client)
+
+		token = oauth_session.fetch_token(
+			self.token_uri,
+			client_secret=self.get_password("client_secret"),
+			include_client_id=include_client_id,
+		)
+
+		token_cache.update_data(token)
+		token_cache.save(ignore_permissions=True)
+		frappe.db.commit()
 
 		return token_cache
 

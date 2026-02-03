@@ -1,12 +1,11 @@
 # Copyright (c) 2021, Frappe Technologies Pvt. Ltd. and Contributors
 # License: MIT. See LICENSE
 """
-	frappe.translate
-	~~~~~~~~~~~~~~~~
+frappe.translate
+~~~~~~~~~~~~~~~~
 
-	Translation tools for frappe
+Translation tools for frappe
 """
-
 
 import functools
 import io
@@ -136,7 +135,7 @@ def get_messages_for_boot():
 def get_all_translations(lang: str) -> dict[str, str]:
 	"""Load and return the entire translations dictionary for a language from apps + user translations.
 
-	:param lang: Language Code, e.g. `hi`
+	:param lang: Language Code, e.g. `hi` or `es-CO`
 	"""
 	if not lang:
 		return {}
@@ -144,8 +143,18 @@ def get_all_translations(lang: str) -> dict[str, str]:
 	def _merge_translations():
 		from frappe.geo.country_info import get_translated_countries
 
-		all_translations = get_translations_from_apps(lang).copy()
+		parent_lang = get_parent_language(lang)
+
+		# Get translations for parent language
+		all_translations = get_translations_from_apps(parent_lang).copy() if parent_lang else {}
+
+		# Update with child language translations (overriding parent translations)
+		all_translations.update(get_translations_from_apps(lang))
+
 		with suppress(Exception):
+			# Get translations for parent language
+			all_translations.update(get_user_translations(parent_lang) if parent_lang else {})
+			# Update with child language translations (overriding parent translations)
 			all_translations.update(get_user_translations(lang))
 			all_translations.update(get_translated_countries())
 
@@ -157,7 +166,7 @@ def get_all_translations(lang: str) -> dict[str, str]:
 		if frappe.flags and frappe.flags.in_test:
 			raise
 		# People mistakenly call translation function on global variables
-		# where locals are not initalized, translations dont make much sense there
+		# where locals are not initialized, translations don't make much sense there
 		frappe.logger().error("Unable to load translations", exc_info=True)
 		return {}
 
@@ -193,6 +202,10 @@ def get_translation_dict_from_file(path, lang, app, throw=False) -> dict[str, st
 		csv_content = read_csv_file(path)
 
 		for item in csv_content:
+			if len(item) in [2, 3]:
+				item[0] = item[0].replace("\\n", "\n")
+				item[1] = item[1].replace("\\n", "\n")
+
 			if len(item) == 3 and item[2]:
 				key = item[0] + ":" + item[2]
 				translation_map[key] = strip(item[1])
@@ -464,8 +477,8 @@ def get_messages_from_report(name):
 	)
 
 	if report.columns:
-		context = (
-			"Column of report '%s'" % report.name
+		context = "Column of report '{}'".format(
+			report.name
 		)  # context has to match context in `prepare_columns` in query_report.js
 		messages.extend([(None, report_column.label, context) for report_column in report.columns])
 
@@ -678,9 +691,9 @@ def write_csv_file(path, app_messages, lang_dict):
 			if len(app_message) == 2:
 				path, message = app_message
 			elif len(app_message) == 3:
-				path, message, lineno = app_message
+				path, message, _lineno = app_message
 			elif len(app_message) == 4:
-				path, message, context, lineno = app_message
+				path, message, context, _lineno = app_message
 			else:
 				continue
 

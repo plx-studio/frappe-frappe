@@ -143,6 +143,7 @@ frappe.router = {
 		if (!frappe.app) return;
 
 		let sub_path = this.get_sub_path();
+
 		if (frappe.boot.setup_complete) {
 			!frappe.re_route["setup-wizard"] && (frappe.re_route["setup-wizard"] = "app");
 		} else if (!sub_path.startsWith("setup-wizard")) {
@@ -190,7 +191,11 @@ frappe.router = {
 				}
 			}
 			if (!frappe.workspaces[private_workspace]) {
-				frappe.msgprint(__("Workspace <b>{0}</b> does not exist", [route[1]]));
+				frappe.msgprint(
+					__("Workspace <b>{0}</b> does not exist", [
+						frappe.utils.xss_sanitise(route[1]),
+					])
+				);
 				return ["Workspaces"];
 			}
 			route = ["Workspaces", "private", frappe.workspaces[private_workspace].title];
@@ -405,6 +410,11 @@ frappe.router = {
 		if (route && ["desk", "app"].includes(route[0])) {
 			// we only need subpath, remove "app" (or "desk")
 			route.shift();
+		}
+
+		// Handle cases where "/" is part of the name
+		if (route[0] === "Form" && route.length > 3) {
+			route = [route[0], route[1], route.slice(2).join("/")];
 		}
 
 		return route;

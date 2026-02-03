@@ -58,7 +58,7 @@ frappe.ui.form.PrintView = class {
 	}
 
 	set_title() {
-		this.page.set_title(this.frm.docname);
+		this.page.set_title(__(this.frm.docname));
 	}
 
 	setup_toolbar() {
@@ -74,14 +74,16 @@ frappe.ui.form.PrintView = class {
 			icon: "refresh",
 		});
 
-		this.page.add_action_icon(
-			"es-line-filetype",
-			() => {
-				this.go_to_form_view();
-			},
-			"",
-			__("Form")
-		);
+		if (frappe.is_mobile()) {
+			this.page.add_button(__("Form"), () => this.go_to_form_view(), { icon: "small-file" });
+		} else {
+			this.page.add_action_icon(
+				"es-line-filetype",
+				() => this.go_to_form_view(),
+				"",
+				__("Form")
+			);
+		}
 	}
 
 	setup_sidebar() {
@@ -751,13 +753,12 @@ frappe.ui.form.PrintView = class {
 		if (
 			frappe.meta
 				.get_print_formats(this.frm.doctype)
-				.includes(this.print_format_selector.val()) ||
-			!this.frm.meta.default_print_format
+				.includes(this.print_format_selector.val())
 		)
 			return;
 
 		this.print_format_selector.empty();
-		this.print_format_selector.val(this.frm.meta.default_print_format);
+		this.print_format_selector.val(this.frm.meta.default_print_format || "");
 	}
 
 	selected_format() {

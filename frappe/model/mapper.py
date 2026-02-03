@@ -14,13 +14,7 @@ def make_mapped_doc(method, source_name, selected_children=None, args=None):
 	Sets selected_children as flags for the `get_mapped_doc` method.
 
 	Called from `open_mapped_doc` from create_new.js"""
-
-	for hook in reversed(frappe.get_hooks("override_whitelisted_methods", {}).get(method, [])):
-		# override using the first hook
-		method = hook
-		break
-
-	method = frappe.get_attr(method)
+	method = frappe.get_attr(frappe.override_whitelisted_method(method))
 
 	if method not in frappe.whitelisted:
 		raise frappe.PermissionError
@@ -43,8 +37,7 @@ def map_docs(method, source_names, target_doc, args=None):
 
 	:param args: Args as string to pass to the mapper method
 	E.g. args: "{ 'supplier': 'XYZ' }"'''
-
-	method = frappe.get_attr(method)
+	method = frappe.get_attr(frappe.override_whitelisted_method(method))
 	if method not in frappe.whitelisted:
 		raise frappe.PermissionError
 
@@ -240,9 +233,6 @@ def map_fetch_fields(target_doc, df, no_copy_fields):
 
 	# options should be like "link_fieldname.fieldname_in_liked_doc"
 	for fetch_df in target_doc.meta.get("fields", {"fetch_from": f"^{df.fieldname}."}):
-		if not (fetch_df.fieldtype == "Read Only" or fetch_df.read_only):
-			continue
-
 		if (
 			not target_doc.get(fetch_df.fieldname) or fetch_df.fieldtype == "Read Only"
 		) and fetch_df.fieldname not in no_copy_fields:

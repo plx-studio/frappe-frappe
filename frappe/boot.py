@@ -9,12 +9,17 @@ import os
 import frappe
 import frappe.defaults
 import frappe.desk.desk_page
+from frappe.core.doctype.installed_applications.installed_applications import (
+	get_setup_wizard_completed_apps,
+	get_setup_wizard_not_required_apps,
+)
 from frappe.core.doctype.navbar_settings.navbar_settings import get_app_logo, get_navbar_settings
 from frappe.desk.doctype.changelog_feed.changelog_feed import get_changelog_feed_items
 from frappe.desk.doctype.form_tour.form_tour import get_onboarding_ui_tours
 from frappe.desk.doctype.route_history.route_history import frequently_visited_links
 from frappe.desk.form.load import get_meta_bundle
 from frappe.email.inbox import get_email_accounts
+from frappe.integrations.frappe_providers.frappecloud_billing import is_fc_site
 from frappe.model.base_document import get_controller
 from frappe.permissions import has_permission
 from frappe.query_builder import DocType
@@ -45,6 +50,8 @@ def get_bootinfo():
 	# system info
 	bootinfo.sitename = frappe.local.site
 	bootinfo.sysdefaults = frappe.defaults.get_defaults()
+	bootinfo.sysdefaults["setup_complete"] = frappe.is_setup_complete()
+
 	bootinfo.server_date = frappe.utils.nowdate()
 
 	if frappe.session["user"] != "Guest":
@@ -100,6 +107,7 @@ def get_bootinfo():
 	bootinfo.update(get_email_accounts(user=frappe.session.user))
 	bootinfo.energy_points_enabled = is_energy_point_enabled()
 	bootinfo.website_tracking_enabled = is_tracking_enabled()
+	bootinfo.sms_gateway_enabled = bool(frappe.db.get_single_value("SMS Settings", "sms_gateway_url"))
 	bootinfo.points = get_energy_points(frappe.session.user)
 	bootinfo.frequently_visited_links = frequently_visited_links()
 	bootinfo.link_preview_doctypes = get_link_preview_doctypes()
@@ -110,12 +118,39 @@ def get_bootinfo():
 	bootinfo.translated_doctypes = get_translated_doctypes()
 	bootinfo.subscription_conf = add_subscription_conf()
 	bootinfo.marketplace_apps = get_marketplace_apps()
+	bootinfo.is_fc_site = is_fc_site()
 	bootinfo.changelog_feed = get_changelog_feed_items()
 
 	if sentry_dsn := get_sentry_dsn():
 		bootinfo.sentry_dsn = sentry_dsn
 
+	bootinfo.setup_wizard_completed_apps = get_setup_wizard_completed_apps() or []
+	bootinfo.setup_wizard_not_required_apps = get_setup_wizard_not_required_apps() or []
+	remove_apps_with_incomplete_dependencies(bootinfo)
+
 	return bootinfo
+
+
+def remove_apps_with_incomplete_dependencies(bootinfo):
+	remove_apps = []
+
+	for app in bootinfo.setup_wizard_not_required_apps:
+		if app in bootinfo.setup_wizard_completed_apps:
+			continue
+
+		for required_apps in frappe.get_hooks("required_apps"):
+			required_apps = required_apps.split("/")
+
+			for required_app in required_apps:
+				if app not in bootinfo.setup_wizard_not_required_apps:
+					continue
+
+				if required_app not in bootinfo.setup_wizard_completed_apps:
+					remove_apps.append(app)
+
+	for app in remove_apps:
+		if app in bootinfo.setup_wizard_not_required_apps:
+			bootinfo.setup_wizard_not_required_apps.remove(app)
 
 
 def get_letter_heads():
@@ -295,7 +330,7 @@ def add_home_page(bootinfo, docs):
 		return
 	home_page = frappe.db.get_default("desktop:home_page")
 
-	if home_page == "setup-wizard":
+	if not frappe.is_setup_complete():
 		bootinfo.setup_wizard_requires = frappe.get_hooks("setup_wizard_requires")
 
 	try:

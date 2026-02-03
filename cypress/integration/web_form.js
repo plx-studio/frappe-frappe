@@ -40,7 +40,11 @@ context("Web Form", () => {
 		cy.url().should("include", "/note/new");
 
 		cy.fill_field("title", "Guest Note 1");
-		cy.get(".web-form-actions button").contains("Save").click();
+		cy.window()
+			.its("__")
+			.then((__) => {
+				cy.get(".web-form-actions button").contains(__("Save")).click();
+			});
 
 		cy.url().should("include", "/note/new");
 
@@ -87,6 +91,10 @@ context("Web Form", () => {
 		cy.visit("/app/web-form/note");
 
 		cy.findByRole("tab", { name: "Settings" }).click();
+
+		cy.wait(100);
+		cy.get(".section-head").contains("List Settings").scrollIntoView();
+
 		cy.fill_field("list_title", "Note List");
 
 		cy.save();

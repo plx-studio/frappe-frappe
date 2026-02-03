@@ -1,15 +1,18 @@
 # Copyright (c) 2015, Frappe Technologies and contributors
 # License: MIT. See LICENSE
 
+from __future__ import annotations
+
 import json
 import quopri
 import traceback
 from contextlib import suppress
 from email.parser import Parser
 from email.policy import SMTP
+from typing import TYPE_CHECKING
 
 import frappe
-from frappe import _, safe_encode, task
+from frappe import _, are_emails_muted, safe_encode, task
 from frappe.core.utils import html2text
 from frappe.database.database import savepoint
 from frappe.email.doctype.email_account.email_account import EmailAccount
@@ -33,6 +36,9 @@ from frappe.utils import (
 )
 from frappe.utils.deprecations import deprecated
 from frappe.utils.verified_command import get_signed_params
+
+if TYPE_CHECKING:
+	from typing import Literal
 
 
 class EmailQueue(Document):
@@ -67,6 +73,9 @@ class EmailQueue(Document):
 	# end: auto-generated types
 	DOCTYPE = "Email Queue"
 
+	def onload(self):
+		self.set_onload("mute_emails", bool(are_emails_muted()))
+
 	def set_recipients(self, recipients):
 		self.set("recipients", [])
 		for r in recipients:
@@ -87,7 +96,7 @@ class EmailQueue(Document):
 		return duplicate
 
 	@classmethod
-	def new(cls, doc_data, ignore_permissions=False) -> "EmailQueue":
+	def new(cls, doc_data, ignore_permissions=False) -> EmailQueue:
 		data = doc_data.copy()
 		if not data.get("recipients"):
 			return
@@ -100,7 +109,7 @@ class EmailQueue(Document):
 		return doc
 
 	@classmethod
-	def find(cls, name) -> "EmailQueue":
+	def find(cls, name) -> EmailQueue:
 		return frappe.get_doc(cls.DOCTYPE, name)
 
 	@classmethod
@@ -152,9 +161,9 @@ class EmailQueue(Document):
 
 		return True
 
-	def send(self, smtp_server_instance: SMTPServer = None):
+	def send(self, smtp_server_instance: SMTPServer = None, force_send: bool = False):
 		"""Send emails to recipients."""
-		if not self.can_send_now():
+		if not self.can_send_now() and not force_send:
 			return
 
 		with SendMailContext(self, smtp_server_instance) as ctx:
@@ -440,11 +449,11 @@ def bulk_retry(queues):
 
 
 @frappe.whitelist()
-def send_now(name):
+def send_now(name, force_send: bool = False):
 	record = EmailQueue.find(name)
 	if record:
 		record.check_permission()
-		record.send()
+		record.send(force_send=force_send)
 
 
 @frappe.whitelist()
@@ -498,6 +507,8 @@ class QueueBuilder:
 		print_letterhead=False,
 		with_container=False,
 		email_read_tracker_url=None,
+		x_priority: Literal[1, 3, 5] = 3,
+		email_headers=None,
 	):
 		"""Add email to sending queue (Email Queue)
 
@@ -523,6 +534,8 @@ class QueueBuilder:
 		:param header: Append header in email (boolean)
 		:param with_container: Wraps email inside styled container
 		:param email_read_tracker_url: A URL for tracking whether an email is read by the recipient.
+		:param x_priority: 1 = HIGHEST, 3 = NORMAL, 5 = LOWEST
+		:param email_headers: Additional headers to be added in the email, e.g. {"X-Custom-Header": "value"} or {"Custom-Header": "value"}. Automatically prepends "X-" to the header name if not present.
 		"""
 
 		self._unsubscribe_method = unsubscribe_method
@@ -533,6 +546,7 @@ class QueueBuilder:
 		self._sender = sender
 		self._text_content = text_content
 		self._message = message
+		self._x_priority: Literal[1, 3, 5] = x_priority
 		self._add_unsubscribe_link = add_unsubscribe_link
 		self._unsubscribe_message = unsubscribe_message
 		self._attachments = attachments
@@ -558,6 +572,7 @@ class QueueBuilder:
 		self.inline_images = inline_images
 		self.print_letterhead = print_letterhead
 		self.email_read_tracker_url = email_read_tracker_url
+		self.email_headers = email_headers
 
 	@property
 	def unsubscribe_method(self):
@@ -640,7 +655,7 @@ class QueueBuilder:
 		if self._unsubscribed_user_emails is not None:
 			return self._unsubscribed_user_emails
 
-		all_ids = list(set(self.recipients + self.cc))
+		all_ids = list(set(self.recipients + self.cc + self.bcc))
 
 		EmailUnsubscribe = DocType("Email Unsubscribe")
 
@@ -674,6 +689,10 @@ class QueueBuilder:
 		unsubscribed_emails = self.get_unsubscribed_user_emails()
 		return [mail_id for mail_id in self.cc if mail_id not in unsubscribed_emails]
 
+	def final_bcc(self):
+		unsubscribed_emails = self.get_unsubscribed_user_emails()
+		return [mail_id for mail_id in self.bcc if mail_id not in unsubscribed_emails]
+
 	def get_attachments(self):
 		attachments = []
 		if self._attachments:
@@ -689,6 +708,9 @@ class QueueBuilder:
 		return attachments
 
 	def prepare_email_content(self):
+		email_account = self.get_outgoing_email_account()
+		if email_account.always_bcc:
+			self._bcc = [*self.bcc, email_account.always_bcc]
 		mail = get_email(
 			recipients=self.final_recipients(),
 			sender=self.sender,
@@ -698,18 +720,24 @@ class QueueBuilder:
 			attachments=self._attachments,
 			reply_to=self.reply_to,
 			cc=self.final_cc(),
-			bcc=self.bcc,
-			email_account=self.get_outgoing_email_account(),
+			bcc=self.final_bcc(),
+			email_account=email_account,
 			expose_recipients=self.expose_recipients,
 			inline_images=self.inline_images,
 			header=self.header,
+			x_priority=self._x_priority,
 		)
 
 		mail.set_message_id(self.message_id, self.is_notification)
+
+		if self.email_headers:
+			mail.add_headers(self.email_headers)
+
 		if self.read_receipt:
 			mail.msg_root["Disposition-Notification-To"] = self.sender
 		if self.in_reply_to:
-			mail.set_in_reply_to(self.in_reply_to)
+			if message_id := frappe.db.get_value("Communication", self.in_reply_to, "message_id"):
+				mail.set_in_reply_to(get_string_between("<", message_id, ">"))
 		return mail
 
 	def process(self, send_now=False) -> EmailQueue | None:
@@ -719,7 +747,7 @@ class QueueBuilder:
 		"""
 		final_recipients = self.final_recipients()
 		queue_separately = (final_recipients and self.queue_separately) or len(final_recipients) > 100
-		if not (final_recipients + self.final_cc()):
+		if not (final_recipients + self.final_cc() + self.final_bcc()):
 			return []
 
 		queue_data = self.as_dict(include_recipients=False)
@@ -727,7 +755,7 @@ class QueueBuilder:
 			return []
 
 		if not queue_separately:
-			recipients = list(set(final_recipients + self.final_cc() + self.bcc))
+			recipients = list(set(final_recipients + self.final_cc() + self.final_bcc()))
 			q = EmailQueue.new({**queue_data, **{"recipients": recipients}}, ignore_permissions=True)
 			send_now and q.send()
 			return q
@@ -752,7 +780,7 @@ class QueueBuilder:
 		# This re-uses smtp server instance to minimize the cost of new session creation
 		smtp_server_instance = None
 		for r in final_recipients:
-			recipients = list(set([r, *self.final_cc(), *self.bcc]))
+			recipients = list(set([r, *self.final_cc(), *self.final_bcc()]))
 			q = EmailQueue.new({**queue_data, **{"recipients": recipients}}, ignore_permissions=True)
 			if not smtp_server_instance:
 				email_account = q.get_email_account(raise_error=True)
@@ -797,7 +825,7 @@ class QueueBuilder:
 			"communication": self.communication,
 			"send_after": self.send_after,
 			"show_as_cc": ",".join(self.final_cc()),
-			"show_as_bcc": ",".join(self.bcc),
+			"show_as_bcc": ",".join(self.final_bcc()),
 			"email_account": email_account_name or None,
 			"email_read_tracker_url": self.email_read_tracker_url,
 		}

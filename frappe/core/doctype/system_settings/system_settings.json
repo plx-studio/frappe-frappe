@@ -11,6 +11,7 @@
   "language",
   "column_break_3",
   "time_zone",
+  "currency",
   "enable_onboarding",
   "setup_complete",
   "disable_document_sharing",
@@ -35,6 +36,7 @@
   "column_break_txqh",
   "deny_multiple_sessions",
   "disable_user_pass_login",
+  "max_signups_allowed_per_hour",
   "login_methods_section",
   "allow_login_using_mobile_number",
   "allow_login_using_user_name",
@@ -53,6 +55,7 @@
   "two_factor_method",
   "lifespan_qrcode_image",
   "otp_issuer_name",
+  "otp_sms_template",
   "password_tab",
   "password_settings",
   "logout_on_password_reset",
@@ -79,6 +82,7 @@
   "allow_guests_to_upload_files",
   "force_web_capture_mode_for_uploads",
   "strip_exif_metadata_from_uploaded_images",
+  "delete_background_exported_reports_after",
   "column_break_uqma",
   "allowed_file_extensions",
   "app_tab",
@@ -94,6 +98,7 @@
   "advanced_tab",
   "prepared_report_section",
   "max_auto_email_report_per_user",
+  "max_report_rows",
   "background_workers",
   "enable_scheduler",
   "dormant_days",
@@ -362,6 +367,13 @@
    "label": "OTP Issuer Name"
   },
   {
+   "depends_on": "eval:doc.enable_two_factor_auth==1 && doc.two_factor_method==\"SMS\"",
+   "description": "OTP placeholder should be defined as <code>{{ otp }}</code> ",
+   "fieldname": "otp_sms_template",
+   "fieldtype": "Small Text",
+   "label": "OTP SMS Template"
+  },
+  {
    "fieldname": "email",
    "fieldtype": "Section Break"
   },
@@ -400,7 +412,7 @@
   },
   {
    "default": "4",
-   "description": "Will run scheduled jobs only once a day for inactive sites. Default 4 days if set to 0.",
+   "description": "Will run scheduled jobs only once a day for inactive sites. Set it to 0 to avoid automatically disabling the scheduler.",
    "fieldname": "dormant_days",
    "fieldtype": "Int",
    "label": "Run Jobs only Daily if Inactive For (Days)"
@@ -684,12 +696,58 @@
    "fieldname": "use_number_format_from_currency",
    "fieldtype": "Check",
    "label": "Use Number Format from Currency"
+  },
+  {
+   "description": "Default display currency",
+   "fieldname": "currency",
+   "fieldtype": "Link",
+   "label": "Currency",
+   "options": "Currency"
+  },
+  {
+   "default": "100000",
+   "description": "This value specifies the max number of rows that can be rendered in report view. ",
+   "fieldname": "max_report_rows",
+   "fieldtype": "Int",
+   "label": "Max Report Rows"
+  },
+  {
+   "default": "0",
+   "fieldname": "show_absolute_datetime_in_timeline",
+   "fieldtype": "Check",
+   "label": "Show Absolute Datetime in Timeline"
+  },
+  {
+   "fieldname": "api_logging_section",
+   "fieldtype": "Section Break",
+   "label": "API Logging"
+  },
+  {
+   "default": "0",
+   "fieldname": "log_api_requests",
+   "fieldtype": "Check",
+   "label": "Log API Requests"
+  },
+  {
+   "default": "48",
+   "description": "Defines how long exported reports sent via email are kept in the system. Older files will be automatically deleted.",
+   "fieldname": "delete_background_exported_reports_after",
+   "fieldtype": "Int",
+   "label": "Delete Background Exported Reports After (Hours)",
+   "non_negative": 1
+  },
+  {
+   "default": "300",
+   "fieldname": "max_signups_allowed_per_hour",
+   "fieldtype": "Int",
+   "label": "Max signups allowed per hour",
+   "non_negative": 1
   }
  ],
  "icon": "fa fa-cog",
  "issingle": 1,
  "links": [],
- "modified": "2024-09-26 16:20:59.417151",
+ "modified": "2025-11-04 16:47:54.230874",
  "modified_by": "Administrator",
  "module": "Core",
  "name": "System Settings",

@@ -93,9 +93,31 @@ def dangerously_reconnect_on_connection_abort(func):
 		try:
 			return func(*args, **kwargs)
 		except Exception as e:
-			if frappe.db.is_interface_error(e):
+			if frappe.db.is_interface_error(e) or isinstance(e, frappe.db.OperationalError):
 				frappe.db.connect()
 				return func(*args, **kwargs)
 			raise
 
 	return wrapper
+
+
+def drop_index_if_exists(table: str, index: str):
+	import click
+
+	if not frappe.db.has_index(table, index):
+		click.echo(f"- Skipped {index} index for {table} because it doesn't exist")
+		return
+
+	try:
+		if frappe.db.db_type == "postgres":
+			# Postgres drops indexes with DROP INDEX, not ALTER TABLE ... DROP INDEX
+			safe_index = index.replace('"', '""')
+			frappe.db.sql_ddl(f'DROP INDEX IF EXISTS "{safe_index}"')
+		else:
+			frappe.db.sql_ddl(f"ALTER TABLE `{table}` DROP INDEX `{index}`")
+	except Exception as e:
+		frappe.log_error("Failed to drop index")
+		click.secho(f"x Failed to drop index {index} from {table}\n {e!s}", fg="red")
+		return
+
+	click.echo(f"✓ dropped {index} index from {table}")

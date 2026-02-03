@@ -32,10 +32,24 @@ from frappe.utils import CallbackManager
 )
 @click.option("--db-root-password", "--mariadb-root-password", help="Root password for MariaDB or PostgreSQL")
 @click.option(
+	"--db-socket",
+	"--mariadb-db-socket",
+	envvar="MYSQL_UNIX_PORT",
+	help="Database socket for MariaDB or folder containing database socket for PostgreSQL",
+)
+@click.option(
 	"--no-mariadb-socket",
 	is_flag=True,
 	default=False,
-	help="Set MariaDB host to % and use TCP/IP Socket instead of using the UNIX Socket",
+	help="DEPRECATED: Set MariaDB host to % and use TCP/IP Socket instead of using the UNIX Socket",
+)
+@click.option(
+	"--mariadb-user-host-login-scope",
+	help=(
+		"Set the mariadb host for the user login scope if you don't want to use the current host as login "
+		"scope which typically is ''@'localhost' - may be used when initializing a user on a remote host. "
+		"See the mariadb docs on account names for more info."
+	),
 )
 @click.option("--admin-password", help="Administrator password for new site", default=None)
 @click.option("--verbose", is_flag=True, default=False, help="Verbose")
@@ -57,10 +71,12 @@ def new_site(
 	source_sql=None,
 	force=None,
 	no_mariadb_socket=False,
+	mariadb_user_host_login_scope=False,
 	install_app=None,
 	db_name=None,
 	db_password=None,
 	db_type=None,
+	db_socket=None,
 	db_host=None,
 	db_port=None,
 	set_default=False,
@@ -70,6 +86,29 @@ def new_site(
 	from frappe.installer import _new_site
 
 	frappe.init(site=site, new_site=True)
+
+	if db_type == "postgres":
+		click.secho(
+			"\nNote: PostgreSQL support is limited to Frappe v16 and above. "
+			"Fixes for earlier versions will not be added.\n",
+			fg="yellow",
+			bold=True,
+		)
+
+	if site in frappe.get_all_apps():
+		click.secho(
+			f"Your bench has an app called {site}, please choose another name for the site.", fg="red"
+		)
+		sys.exit(1)
+
+	if no_mariadb_socket:
+		click.secho(
+			"--no-mariadb-socket is DEPRECATED; "
+			"use --mariadb-user-host-login-scope='%' (wildcard) or --mariadb-user-host-login-scope=<myhostscope>, instead. "
+			"The name of this option was misleading: it had nothing to do with sockets.",
+			fg="yellow",
+		)
+		mariadb_user_host_login_scope = "%"
 
 	_new_site(
 		db_name,
@@ -81,12 +120,13 @@ def new_site(
 		install_apps=install_app,
 		source_sql=source_sql,
 		force=force,
-		no_mariadb_socket=no_mariadb_socket,
 		db_password=db_password,
 		db_type=db_type,
+		db_socket=db_socket,
 		db_host=db_host,
 		db_port=db_port,
 		setup_db=setup_db,
+		mariadb_user_host_login_scope=mariadb_user_host_login_scope,
 	)
 
 	if set_default:
@@ -168,15 +208,35 @@ def _restore(
 	with_public_files=None,
 	with_private_files=None,
 ):
+	from pathlib import Path
+
 	from frappe.installer import extract_files
 	from frappe.utils.backups import decrypt_backup, get_or_generate_backup_encryption_key
+
+	# Check for the backup file in the backup directory, as well as the main bench directory
+	dirs = (f"{site}/private/backups", "..")
+
+	# Try to resolve path to the file if we can't find it directly
+	if not Path(sql_file_path).exists():
+		click.secho(
+			f"File {sql_file_path} not found. Trying to check in alternative directories.", fg="yellow"
+		)
+		for dir in dirs:
+			potential_path = Path(dir) / Path(sql_file_path)
+			if potential_path.exists():
+				sql_file_path = str(potential_path.resolve())
+				click.secho(f"File {sql_file_path} found.", fg="green")
+				break
+		else:
+			click.secho(f"File {sql_file_path} not found.", fg="red")
+			sys.exit(1)
 
 	err, out = frappe.utils.execute_in_shell(f"file {sql_file_path}", check_exit_code=True)
 	if err:
 		click.secho("Failed to detect type of backup file", fg="red")
 		sys.exit(1)
 
-	if "cipher" in out.decode().split(":")[-1].strip():
+	if "AES" in out.decode().split(":")[-1].strip():
 		if encryption_key:
 			click.secho("Encrypted backup file detected. Decrypting using provided key.", fg="yellow")
 
@@ -255,24 +315,6 @@ def restore_backup(
 
 	from frappe.installer import _new_site, is_downgrade, is_partial, validate_database_sql
 
-	# Check for the backup file in the backup directory, as well as the main bench directory
-	dirs = (f"{site}/private/backups", "..")
-
-	# Try to resolve path to the file if we can't find it directly
-	if not Path(sql_file_path).exists():
-		click.secho(
-			f"File {sql_file_path} not found. Trying to check in alternative directories.", fg="yellow"
-		)
-		for dir in dirs:
-			potential_path = Path(dir) / Path(sql_file_path)
-			if potential_path.exists():
-				sql_file_path = str(potential_path.resolve())
-				click.secho(f"File {sql_file_path} found.", fg="green")
-				break
-		else:
-			click.secho(f"File {sql_file_path} not found.", fg="red")
-			sys.exit(1)
-
 	if is_partial(sql_file_path):
 		click.secho(
 			"Partial Backup file detected. You cannot use a partial file to restore a Frappe site.",
@@ -287,7 +329,7 @@ def restore_backup(
 	# Check if the backup is of an older version of frappe and the user hasn't specified force
 	if is_downgrade(sql_file_path, verbose=True) and not force:
 		warn_message = (
-			"This is not recommended and may lead to unexpected behaviour. " "Do you want to continue anyway?"
+			"This is not recommended and may lead to unexpected behaviour. Do you want to continue anyway?"
 		)
 		click.confirm(warn_message, abort=True)
 
@@ -518,23 +560,12 @@ def list_apps(context, format):
 @pass_context
 def add_db_index(context, doctype, column):
 	"Adds a new DB index and creates a property setter to persist it."
-	from frappe.custom.doctype.property_setter.property_setter import make_property_setter
-
 	columns = column  # correct naming
 	for site in context.sites:
 		frappe.init(site=site)
 		frappe.connect()
 		try:
 			frappe.db.add_index(doctype, columns)
-			if len(columns) == 1:
-				make_property_setter(
-					doctype,
-					columns[0],
-					property="search_index",
-					value="1",
-					property_type="Check",
-					for_doctype=False,  # Applied on docfield
-				)
 			frappe.db.commit()
 		finally:
 			frappe.destroy()
@@ -1005,7 +1036,7 @@ def move(dest_dir, site):
 	site_dump_exists = True
 	count = 0
 	while site_dump_exists:
-		final_new_path = new_path + (count and str(count) or "")
+		final_new_path = new_path + ((count and str(count)) or "")
 		site_dump_exists = os.path.exists(final_new_path)
 		count = int(count or 0) + 1
 
@@ -1122,8 +1153,16 @@ def publish_realtime(context, event, message, room, user, doctype, docname, afte
 @click.command("browse")
 @click.argument("site", required=False)
 @click.option("--user", required=False, help="Login as user")
+@click.option(
+	"--session-end",
+	required=False,
+	help="Session end (in ISO8601 format and timezone-aware - 2025-01-24T12:26:29.200853+00:00)",
+)
+@click.option("--user-for-audit", required=False, help="The user to mention in audit trail")
 @pass_context
-def browse(context, site, user=None):
+def browse(
+	context, site, user: str | None = None, session_end: str | None = None, user_for_audit: str | None = None
+):
 	"""Opens the site on web browser"""
 	from frappe.auth import CookieManager, LoginManager
 
@@ -1149,7 +1188,7 @@ def browse(context, site, user=None):
 			frappe.utils.set_request(path="/")
 			frappe.local.cookie_manager = CookieManager()
 			frappe.local.login_manager = LoginManager()
-			frappe.local.login_manager.login_as(user)
+			frappe.local.login_manager.login_as(user, session_end, user_for_audit)
 			sid = f"/app?sid={frappe.session.sid}"
 		else:
 			click.echo("Please enable developer mode to login as a user")

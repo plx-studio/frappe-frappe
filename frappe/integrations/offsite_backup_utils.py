@@ -39,9 +39,6 @@ def send_email(success, service_name, doctype, email_field, error_status=None):
 
 
 def get_recipients(doctype, email_field):
-	if not frappe.db:
-		frappe.connect()
-
 	return split_emails(frappe.db.get_value(doctype, None, email_field))
 
 
@@ -52,6 +49,7 @@ def get_latest_backup_file(with_files=False):
 		frappe.conf.db_name,
 		frappe.conf.db_name,
 		frappe.conf.db_password,
+		db_socket=frappe.conf.db_socket,
 		db_host=frappe.conf.db_host,
 		db_port=frappe.conf.db_port,
 		db_type=frappe.conf.db_type,
@@ -96,7 +94,7 @@ def get_chunk_site(file_size):
 
 def validate_file_size():
 	frappe.flags.create_new_backup = True
-	latest_file, site_config = get_latest_backup_file()
+	latest_file, _site_config = get_latest_backup_file()
 	file_size = get_file_size(latest_file, unit="GB") if latest_file else 0
 
 	if file_size > 1:
@@ -110,6 +108,7 @@ def generate_files_backup():
 		frappe.conf.db_name,
 		frappe.conf.db_name,
 		frappe.conf.db_password,
+		db_socket=frappe.conf.db_socket,
 		db_host=frappe.conf.db_host,
 		db_port=frappe.conf.db_port,
 		db_type=frappe.conf.db_type,

@@ -179,7 +179,7 @@ function get_currency_symbol(currency) {
 function get_number_format(currency) {
 	let sysdefaults = frappe?.boot?.sysdefaults;
 	return (
-		(sysdefaults.use_number_format_from_currency &&
+		(cint(sysdefaults?.use_number_format_from_currency) &&
 			currency &&
 			frappe.model.get_value(":Currency", currency, "number_format")) ||
 		sysdefaults.number_format ||
@@ -195,7 +195,8 @@ function get_number_format_info(format) {
 	}
 
 	// get the precision from the number format
-	info.precision = format.split(info.decimal_str).slice(1)[0].length;
+	info.precision =
+		info.decimal_str == "" ? 0 : format.split(info.decimal_str).slice(1)[0].length;
 
 	return info;
 }

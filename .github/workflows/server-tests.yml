@@ -51,7 +51,7 @@ jobs:
 
     services:
       mariadb:
-        image: mariadb:10.6
+        image: mariadb:10.6.24
         env:
           MARIADB_ROOT_PASSWORD: travis
         ports:
@@ -71,7 +71,7 @@ jobs:
           - 5432:5432
 
       smtp_server:
-        image: rnwood/smtp4dev
+        image: rnwood/smtp4dev:3.7.1
         ports:
           - 2525:25
           - 3000:80

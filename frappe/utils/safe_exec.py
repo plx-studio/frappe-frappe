@@ -7,6 +7,9 @@ import mimetypes
 import types
 from contextlib import contextmanager
 from functools import lru_cache
+from itertools import chain
+from types import FunctionType, MethodType, ModuleType
+from typing import TYPE_CHECKING, Any
 
 import RestrictedPython.Guards
 from RestrictedPython import PrintCollector, compile_restricted, safe_globals
@@ -26,6 +29,7 @@ from frappe.model.mapper import get_mapped_doc
 from frappe.model.rename_doc import rename_doc
 from frappe.modules import scrub
 from frappe.utils.background_jobs import enqueue, get_jobs
+from frappe.utils.inplacevar import protected_inplacevar
 from frappe.website.utils import get_next_link, get_toc
 from frappe.www.printview import get_visible_columns
 
@@ -177,7 +181,7 @@ def get_safe_globals():
 	if "_" in form_dict:
 		del frappe.local.form_dict["_"]
 
-	user = getattr(frappe.local, "session", None) and frappe.local.session.user or "Guest"
+	user = (getattr(frappe.local, "session", None) and frappe.local.session.user) or "Guest"
 
 	out = NamespaceDict(
 		# make available limited methods of frappe
@@ -223,13 +227,13 @@ def get_safe_globals():
 			get_fullname=frappe.utils.get_fullname,
 			get_gravatar=frappe.utils.get_gravatar_url,
 			full_name=frappe.local.session.data.full_name
-			if getattr(frappe.local, "session", None)
+			if getattr(frappe.local, "session", None) and getattr(frappe.local.session, "data", None)
 			else "Guest",
 			request=getattr(frappe.local, "request", {}),
 			session=frappe._dict(
 				user=user,
 				csrf_token=frappe.local.session.data.csrf_token
-				if getattr(frappe.local, "session", None)
+				if getattr(frappe.local, "session", None) and getattr(frappe.local.session, "data", None)
 				else "",
 			),
 			make_get_request=frappe.integrations.utils.make_get_request,
@@ -298,11 +302,58 @@ def get_safe_globals():
 	# allow iterators and list comprehension
 	out._getiter_ = iter
 	out._iter_unpack_sequence_ = RestrictedPython.Guards.guarded_iter_unpack_sequence
+	out._inplacevar_ = protected_inplacevar
 
 	# add common python builtins
 	out.update(get_python_builtins())
 
 	return out
+
+
+def get_keys_for_autocomplete(
+	key: str,
+	value: Any,
+	prefix: str = "",
+	offset: int = 0,
+	meta: str = "ctx",
+	depth: int = 0,
+	max_depth: int | None = None,
+):
+	if max_depth and depth > max_depth:
+		return
+	full_key = f"{prefix}.{key}" if prefix else key
+	if key.startswith("_"):
+		return
+	if isinstance(value, NamespaceDict | dict) and value:
+		if key == "form_dict":
+			yield {"value": full_key, "score": offset + 7, "meta": meta}
+		else:
+			yield from chain.from_iterable(
+				get_keys_for_autocomplete(
+					key,
+					value,
+					full_key,
+					offset,
+					meta,
+					depth + 1,
+					max_depth=max_depth,
+				)
+				for key, value in value.items()
+			)
+	else:
+		if isinstance(value, type) and issubclass(value, Exception):
+			score = offset + 0
+		elif isinstance(value, ModuleType):
+			score = offset + 10
+		elif isinstance(value, FunctionType | MethodType):
+			score = offset + 9
+		elif isinstance(value, type):
+			score = offset + 8
+		elif isinstance(value, dict):
+			score = offset + 7
+		else:
+			score = offset + 6
+		yield {"value": full_key, "score": score, "meta": meta}
 
 
 def is_job_queued(job_name, queue="default"):
@@ -496,7 +547,7 @@ def _validate_attribute_read(object, name):
 		raise SyntaxError(f"Reading {object} attributes is not allowed")
 
 	if name.startswith("_"):
-		raise AttributeError(f'"{name}" is an invalid attribute name because it ' 'starts with "_"')
+		raise AttributeError(f'"{name}" is an invalid attribute name because it starts with "_"')
 
 
 def _write(obj):
@@ -642,6 +693,8 @@ VALID_UTILS = (
 	"formatdate",
 	"get_user_info_for_avatar",
 	"get_abbr",
+	"get_month",
+	"sha256_hash",
 )
 
 
@@ -655,4 +708,5 @@ WHITELISTED_SAFE_EVAL_GLOBALS = {
 	"_getitem_": _getitem,
 	"_getiter_": iter,
 	"_iter_unpack_sequence_": RestrictedPython.Guards.guarded_iter_unpack_sequence,
+	"_inplacevar_": protected_inplacevar,
 }

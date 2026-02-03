@@ -77,8 +77,7 @@ frappe.ui.form.MultiSelectDialog = class MultiSelectDialog {
 	}
 
 	make() {
-		let doctype_plural = __(this.doctype).plural();
-		let title = __("Select {0}", [this.for_select ? __("value") : doctype_plural]);
+		let title = __("Select {0}", [this.for_select ? __("value") : __(this.doctype)]);
 
 		this.dialog = new frappe.ui.Dialog({
 			title: title,
@@ -192,7 +191,7 @@ frappe.ui.form.MultiSelectDialog = class MultiSelectDialog {
 	get_child_datatable_columns() {
 		const parent = this.doctype;
 		return [parent, ...this.child_columns].map((d) => ({
-			name: frappe.unscrub(d),
+			name: __(frappe.unscrub(d)),
 			editable: false,
 		}));
 	}

@@ -491,6 +491,9 @@ class TestDB(FrappeTestCase):
 
 		self.assertEqual(frappe.db.exists(dt, [["name", "=", dn]]), dn)
 
+	def test_estimated_count(self):
+		self.assertGreater(frappe.db.estimate_count("DocField"), 100)
+
 	def test_bulk_insert(self):
 		current_count = frappe.db.count("ToDo")
 		test_body = f"test_bulk_insert - {random_string(10)}"
@@ -517,6 +520,60 @@ class TestDB(FrappeTestCase):
 			)
 
 		frappe.db.delete("ToDo", {"description": test_body})
+
+	def test_bulk_update(self):
+		test_body = f"test_bulk_update - {random_string(10)}"
+
+		frappe.db.bulk_insert(
+			"ToDo",
+			["name", "description"],
+			[[f"ToDo Test Bulk Update {i}", test_body] for i in range(20)],
+			ignore_duplicates=True,
+		)
+
+		record_names = frappe.get_all("ToDo", filters={"description": test_body}, pluck="name")
+
+		new_descriptions = {name: f"{test_body} - updated - {random_string(10)}" for name in record_names}
+
+		# update with same fields to update
+		frappe.db.bulk_update(
+			"ToDo", {name: {"description": new_descriptions[name]} for name in record_names}
+		)
+
+		# check if all records were updated
+		updated_records = dict(
+			frappe.get_all(
+				"ToDo", filters={"name": ("in", record_names)}, fields=["name", "description"], as_list=True
+			)
+		)
+		self.assertDictEqual(new_descriptions, updated_records)
+
+		# update with different fields to update
+		updates = {
+			record_names[0]: {"priority": "High", "status": "Closed"},
+			record_names[1]: {"status": "Closed"},
+		}
+		frappe.db.bulk_update("ToDo", updates)
+
+		priority, status = frappe.db.get_value("ToDo", record_names[0], ["priority", "status"])
+
+		self.assertEqual(priority, "High")
+		self.assertEqual(status, "Closed")
+
+		# further updates with different fields to update
+		updates = {record_names[0]: {"status": "Open"}, record_names[1]: {"priority": "Low"}}
+		frappe.db.bulk_update("ToDo", updates)
+
+		priority, status = frappe.db.get_value("ToDo", record_names[0], ["priority", "status"])
+		self.assertEqual(priority, "High")  # should stay the same
+		self.assertEqual(status, "Open")
+
+		priority, status = frappe.db.get_value("ToDo", record_names[1], ["priority", "status"])
+		self.assertEqual(priority, "Low")
+		self.assertEqual(status, "Closed")  # should stay the same
+
+		# cleanup
+		frappe.db.delete("ToDo", {"name": ("in", record_names)})
 
 	def test_count(self):
 		frappe.db.delete("Note")
@@ -916,10 +973,12 @@ class TestDDLCommandsPost(FrappeTestCase):
 	def test_is(self):
 		user = frappe.qb.DocType("User")
 		self.assertIn(
-			"is not null", frappe.db.get_values(user, filters={user.name: ("is", "set")}, run=False).lower()
+			'coalesce("name",',
+			frappe.db.get_values(user, filters={user.name: ("is", "set")}, run=False).lower(),
 		)
 		self.assertIn(
-			"is null", frappe.db.get_values(user, filters={user.name: ("is", "not set")}, run=False).lower()
+			'coalesce("name",',
+			frappe.db.get_values(user, filters={user.name: ("is", "not set")}, run=False).lower(),
 		)
 
 
@@ -1005,6 +1064,32 @@ class TestConcurrency(FrappeTestCase):
 
 		with self.secondary_connection():
 			self.assertRaises(frappe.QueryTimeoutError, frappe.delete_doc, note.doctype, note.name)
+
+	@timeout(5, "unexpected locking")
+	def test_value_cache_invalidation(self):
+		note = frappe.new_doc("Note")
+		note.title = note.content = frappe.generate_hash()
+		note.insert()
+		frappe.db.commit()  # ensure that second connection can see the document
+		original_title = note.title
+		new_title = frappe.generate_hash()
+
+		with self.primary_connection():
+			note = frappe.get_doc(note.doctype, note.name)
+			note.title = new_title
+			note.save()  # NOT commited yet, secondary connection will still see old value
+
+		with self.secondary_connection():
+			rr_value = frappe.db.get_value("Note", note.name, "title", cache=True)
+			self.assertEqual(rr_value, original_title)
+
+		with self.primary_connection():
+			frappe.db.commit()
+
+		with self.secondary_connection():
+			frappe.db.rollback()
+			new_value = frappe.db.get_value("Note", note.name, "title", cache=True)
+			self.assertEqual(new_value, new_title)
 
 
 class TestSqlIterator(FrappeTestCase):

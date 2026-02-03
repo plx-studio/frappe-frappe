@@ -29,16 +29,27 @@ frappe.search.AwesomeBar = class AwesomeBar {
 				};
 			},
 			item: function (item, term) {
-				var d = this.get_item(item.value);
-				var name = __(d.label || d.value);
-				var html = "<span>" + name + "</span>";
+				const d = this.get_item(item.value);
+				let target = "#";
+				if (d.route) {
+					target = frappe.router.make_url(
+						frappe.router.convert_from_standard_route(
+							frappe.router.get_route_from_arguments(
+								typeof d.route === "string" ? [d.route] : d.route
+							)
+						)
+					);
+				}
+				let html = `<span>${__(d.label || d.value)}</span>`;
+
 				if (d.description && d.value !== d.description) {
 					html +=
 						'<br><span class="text-muted ellipsis">' + __(d.description) + "</span>";
 				}
+
 				return $("<li></li>")
 					.data("item.autocomplete", d)
-					.html(`<a style="font-weight:normal">${html}</a>`)
+					.html(`<a style="font-weight:normal" href="${target}">${html}</a>`)
 					.get(0);
 			},
 			sort: function (a, b) {
@@ -292,7 +303,7 @@ frappe.search.AwesomeBar = class AwesomeBar {
 					<kbd>↵</kbd>
 				</span>
 			`,
-			value: __("Search for {0}", [txt]),
+			value: __("Search for {0}", [frappe.utils.xss_sanitise(txt)]),
 			match: txt,
 			index: 100,
 			default: "Search",
@@ -313,8 +324,11 @@ frappe.search.AwesomeBar = class AwesomeBar {
 			var options = {};
 			options[search_field] = ["like", "%" + txt + "%"];
 			this.options.push({
-				label: __("Find {0} in {1}", [txt.bold(), __(route[1]).bold()]),
-				value: __("Find {0} in {1}", [txt, __(route[1])]),
+				label: __("Find {0} in {1}", [
+					frappe.utils.xss_sanitise(txt).bold(),
+					__(route[1]).bold(),
+				]),
+				value: __("Find {0} in {1}", [frappe.utils.xss_sanitise(txt), __(route[1])]),
 				route_options: options,
 				onclick: function () {
 					cur_list.show();
@@ -334,10 +348,13 @@ frappe.search.AwesomeBar = class AwesomeBar {
 			}
 			try {
 				var val = eval(txt);
-				var formatted_value = __("{0} = {1}", [txt, (val + "").bold()]);
+				var formatted_value = __("{0} = {1}", [
+					frappe.utils.xss_sanitise(txt),
+					(val + "").bold(),
+				]);
 				this.options.push({
 					label: formatted_value,
-					value: __("{0} = {1}", [txt, val]),
+					value: __("{0} = {1}", [frappe.utils.xss_sanitise(txt), val]),
 					match: val,
 					index: 80,
 					default: "Calculator",

@@ -49,10 +49,10 @@ class Workspace:
 
 		self.can_read = self.get_cached("user_perm_can_read", self.get_can_read_items)
 
-		self.allowed_pages = get_allowed_pages(cache=True)
-		self.allowed_reports = get_allowed_reports(cache=True)
-
 		if not minimal:
+			self.allowed_pages = get_allowed_pages(cache=True)
+			self.allowed_reports = get_allowed_reports(cache=True)
+
 			if self.doc.content:
 				self.onboarding_list = [
 					x["data"]["onboarding_name"] for x in loads(self.doc.content) if x["type"] == "onboarding"
@@ -86,7 +86,7 @@ class Workspace:
 
 	def get_cached(self, cache_key, fallback_fn):
 		value = frappe.cache.get_value(cache_key, user=frappe.session.user)
-		if value:
+		if value is not None:
 			return value
 
 		value = fallback_fn()
@@ -139,10 +139,14 @@ class Workspace:
 		item_type = item_type.lower()
 
 		if item_type == "doctype":
-			return name in self.can_read or [] and name in self.restricted_doctypes or []
+			return name in (self.can_read or []) and name in (self.restricted_doctypes or [])
 		if item_type == "page":
+			if not self.allowed_pages:
+				self.allowed_pages = get_allowed_pages(cache=True)
 			return name in self.allowed_pages and name in self.restricted_pages
 		if item_type == "report":
+			if not self.allowed_reports:
+				self.allowed_reports = get_allowed_reports(cache=True)
 			return name in self.allowed_reports
 		if item_type == "help":
 			return True
@@ -530,6 +534,7 @@ def get_custom_report_list(module):
 			else 0,
 			"label": _(r.name),
 			"link_to": r.name,
+			"report_ref_doctype": r.ref_doctype,
 		}
 		for r in reports
 	]

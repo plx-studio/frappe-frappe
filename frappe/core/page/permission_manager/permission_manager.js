@@ -49,6 +49,13 @@ frappe.PermissionEngine = class PermissionEngine {
 			label: __("Document Type"),
 			fieldtype: "Link",
 			options: "DocType",
+			get_query: function () {
+				return {
+					filters: {
+						istable: 0,
+					},
+				};
+			},
 			change: function () {
 				frappe.set_route("permission-manager", this.get_value());
 			},
@@ -106,7 +113,7 @@ frappe.PermissionEngine = class PermissionEngine {
 
 	reset_std_permissions(data) {
 		let doctype = this.get_doctype();
-		let d = frappe.confirm(__("Reset Permissions for {0}?", [doctype]), () => {
+		let d = frappe.confirm(__("Reset Permissions for {0}?", [__(doctype)]), () => {
 			return frappe
 				.call({
 					module: "frappe.core",
@@ -122,7 +129,7 @@ frappe.PermissionEngine = class PermissionEngine {
 		// show standard permissions
 		let $d = $(d.wrapper)
 			.find(".frappe-confirm-message")
-			.append("<hr><h5>Standard Permissions:</h5><br>");
+			.append(`<hr><h5>${__("Standard Permissions")}:</h5><br>`);
 		let $wrapper = $("<p></p>").appendTo($d);
 		data.message.forEach((d) => {
 			let rights = this.rights
@@ -134,7 +141,7 @@ frappe.PermissionEngine = class PermissionEngine {
 			d.rights = rights.join(", ");
 
 			$wrapper.append(`<div class="row">\
-				<div class="col-xs-5"><b>${d.role}</b>, Level ${d.permlevel || 0}</div>\
+				<div class="col-xs-5"><b>${__(d.role)}</b>, ${__("Level")} ${d.permlevel || 0}</div>\
 				<div class="col-xs-7">${d.rights}</div>\
 			</div><br>`);
 		});
@@ -332,23 +339,68 @@ frappe.PermissionEngine = class PermissionEngine {
 			.find("a")
 			.attr("data-role", role)
 			.click(function () {
-				let role = $(this).attr("data-role");
+				const role = $(this).attr("data-role");
 				frappe.call({
 					module: "frappe.core",
 					page: "permission_manager",
 					method: "get_users_with_role",
-					args: {
-						role: role,
-					},
+					args: { role },
 					callback: function (r) {
-						r.message = $.map(r.message, function (p) {
-							return $.format('<a href="/app/user/{0}">{1}</a>', [p, p]);
+						let message_html = "";
+
+						const role_label = __(role);
+						const users = (r.message || []).filter(Boolean);
+						const user_count = users.length;
+						const display_count = Math.min(user_count, 5);
+
+						if (user_count === 0) {
+							message_html = __("No user has the role <strong>{0}</strong>", [
+								role_label,
+							]);
+						} else {
+							const user_text = user_count === 1 ? __("User") : __("Users");
+							const display_users = users.slice(0, display_count);
+
+							const user_list = display_users
+								.map(
+									(user) =>
+										`<li class="py-1">
+                        					${frappe.utils.get_form_link("User", user, true)}
+                    					</li>`
+								)
+								.join("");
+
+							message_html = __("{0} with the role <strong>{1}</strong>", [
+								user_text,
+								role_label,
+							]);
+
+							message_html += `<ul class="border rounded pl-4 pb-2 pt-2 mb-3 mt-3">${user_list}</ul>`;
+
+							// show compact "View All" link if more users
+							if (user_count > display_count) {
+								const route = frappe.utils.generate_route({
+									type: "Doctype",
+									doctype: "User",
+									name: "User",
+									doc_view: "List",
+									route_options: { role },
+								});
+
+								message_html += `<div class="text-center">
+                    								<a href="${route}" class="text-muted">
+														${frappe.utils.icon("external-link", "sm", "mr-1")}
+														${__("View all {0} users", [user_count])}
+                    								</a>
+                								</div>`;
+							}
+						}
+
+						frappe.msgprint({
+							title: __("Users"),
+							message: message_html,
+							indicator: user_count === 0 ? "orange" : "blue",
 						});
-						frappe.msgprint(
-							__("Users with role {0}:", [__(role)]) +
-								"<br>" +
-								r.message.join("<br>")
-						);
 					},
 				});
 				return false;

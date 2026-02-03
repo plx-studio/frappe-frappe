@@ -2,6 +2,7 @@
 # License: MIT. See LICENSE
 import datetime
 import json
+import threading
 
 import frappe
 import frappe.desk.query_report
@@ -29,6 +30,7 @@ class Report(Document):
 		from frappe.types import DF
 
 		add_total_row: DF.Check
+		add_translate_data: DF.Check
 		columns: DF.Table[ReportColumn]
 		disabled: DF.Check
 		filters: DF.Table[ReportFilter]
@@ -63,14 +65,19 @@ class Report(Document):
 
 		if self.is_standard == "No":
 			# allow only script manager to edit scripts
-			if self.report_type != "Report Builder":
+			if self.report_type not in ("Report Builder", "Custom Report"):
 				frappe.only_for("Script Manager", True)
 
 			if frappe.db.get_value("Report", self.name, "is_standard") == "Yes":
 				frappe.throw(_("Cannot edit a standard report. Please duplicate and create a new report"))
 
-		if self.is_standard == "Yes" and frappe.session.user != "Administrator":
-			frappe.throw(_("Only Administrator can save a standard report. Please rename and save."))
+		if self.is_standard == "Yes":
+			if frappe.session.user != "Administrator":
+				frappe.throw(_("Only Administrator can save a standard report. Please rename and save."))
+
+			# Letter Head is visible only for non-standard reports.
+			# It should not remain set when it's invisible.
+			self.letter_head = None
 
 		if self.report_type == "Report Builder":
 			self.update_report_json()
@@ -82,7 +89,7 @@ class Report(Document):
 		self.export_doc()
 
 	def before_export(self, doc):
-		doc.letterhead = None
+		doc.letter_head = None
 		doc.prepared_report = 0
 
 	def on_trash(self):
@@ -157,17 +164,25 @@ class Report(Document):
 		res = []
 
 		start_time = datetime.datetime.now()
+		prepared_report_watcher = None
+		if not self.prepared_report:
+			prepared_report_watcher = threading.Timer(
+				interval=threshold,
+				function=enable_prepared_report,
+				kwargs={"report": self.name, "site": frappe.local.site},
+			)
+			prepared_report_watcher.start()
 
 		# The JOB
-		if self.is_standard == "Yes":
-			res = self.execute_module(filters)
-		else:
-			res = self.execute_script(filters)
+		try:
+			if self.is_standard == "Yes":
+				res = self.execute_module(filters)
+			else:
+				res = self.execute_script(filters)
+		finally:
+			prepared_report_watcher and prepared_report_watcher.cancel()
 
-		# automatically set as prepared
 		execution_time = (datetime.datetime.now() - start_time).total_seconds()
-		if execution_time > threshold and not self.prepared_report and not frappe.conf.developer_mode:
-			frappe.enqueue(enable_prepared_report, report=self.name)
 
 		frappe.cache.hset("report_execution_time", self.name, execution_time)
 
@@ -415,5 +430,9 @@ def get_group_by_column_label(args, meta):
 	return label
 
 
-def enable_prepared_report(report: str):
+def enable_prepared_report(report: str, site: str):
+	frappe.init(site)
+	frappe.connect()
 	frappe.db.set_value("Report", report, "prepared_report", 1)
+	frappe.db.commit()
+	frappe.destroy()

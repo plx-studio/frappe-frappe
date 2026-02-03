@@ -1,13 +1,15 @@
 # Copyright (c) 2022, Frappe Technologies Pvt. Ltd. and Contributors
 # License: MIT. See LICENSE
 
-# imports - standard imports
 import gzip
 import importlib
 import json
 import os
 import shlex
+import signal
 import subprocess
+import sys
+import time
 import types
 import unittest
 from contextlib import contextmanager
@@ -17,13 +19,12 @@ from pathlib import Path
 from unittest.case import skipIf
 from unittest.mock import patch
 
-# imports - third party imports
 import click
+import requests
 from click import Command
 from click.testing import CliRunner, Result
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_fixed
 
-# imports - module imports
 import frappe
 import frappe.commands.scheduler
 import frappe.commands.site
@@ -180,14 +181,18 @@ class BaseTestCommands(FrappeTestCase):
 		cmd_config = {
 			"test_site": TEST_SITE,
 			"admin_password": frappe.conf.admin_password,
-			"root_login": frappe.conf.root_login,
-			"root_password": frappe.conf.root_password,
 			"db_type": frappe.conf.db_type,
+			"db_root_username": frappe.conf.root_login,
+			"db_root_password": frappe.conf.root_password,
 		}
 
 		if not os.path.exists(os.path.join(TEST_SITE, "site_config.json")):
 			cls.execute(
-				"bench new-site {test_site} --admin-password {admin_password} --db-type" " {db_type}",
+				"bench new-site {test_site} "
+				"--admin-password {admin_password} "
+				"--db-root-username {db_root_username} "
+				"--db-root-password {db_root_password} "
+				"--db-type {db_type}",
 				cmd_config,
 			)
 
@@ -292,7 +297,7 @@ class TestCommands(BaseTestCommands):
 		self.execute("bench --site {test_site} backup --exclude 'ToDo'", site_data)
 		site_data.update({"kw": "\"{'partial':True}\""})
 		self.execute(
-			"bench --site {test_site} execute" " frappe.utils.backups.fetch_latest_backups --kwargs {kw}",
+			"bench --site {test_site} execute frappe.utils.backups.fetch_latest_backups --kwargs {kw}",
 			site_data,
 		)
 		site_data.update({"database": json.loads(self.stdout)["database"]})
@@ -451,7 +456,7 @@ class TestCommands(BaseTestCommands):
 
 		# Reset it back to original password
 		original_password = frappe.conf.admin_password or "admin"
-		self.execute("bench --site {site} set-admin-password %s" % original_password)
+		self.execute("bench --site {{site}} set-admin-password {}".format(original_password))
 		self.assertEqual(self.returncode, 0)
 		self.assertEqual(check_password("Administrator", original_password), "Administrator")
 
@@ -596,6 +601,7 @@ class TestBackups(BaseTestCommands):
 			frappe.conf.db_name,
 			frappe.conf.db_name,
 			frappe.conf.db_password + "INCORRECT PASSWORD",
+			db_socket=frappe.conf.db_socket,
 			db_host=frappe.conf.db_host,
 			db_port=frappe.conf.db_port,
 			db_type=frappe.conf.db_type,
@@ -827,6 +833,10 @@ class TestBenchBuild(BaseTestCommands):
 
 
 class TestDBUtils(BaseTestCommands):
+	@skipIf(
+		not (frappe.conf.db_type == "mariadb"),
+		"Only for MariaDB",
+	)
 	def test_db_add_index(self):
 		field = "reset_password_key"
 		self.execute("bench --site {site} add-database-index --doctype User --column " + field, {})
@@ -913,3 +923,41 @@ class TestSchedulerCLI(BaseTestCommands):
 		self.execute("bench --site {site} scheduler resume")
 		self.assertEqual(self.returncode, 0)
 		self.assertRegex(self.stdout, r"Scheduler is resumed for site .*")
+
+
+class TestGunicornWorker(FrappeTestCase):
+	port = 8005
+
+	def spawn_gunicorn(self, args):
+		self.handle = subprocess.Popen(
+			[
+				sys.executable,
+				"-m",
+				"gunicorn",
+				"-b",
+				f"127.0.0.1:{self.port}",
+				"-w1",
+				"frappe.app:application",
+				"--preload",
+				*args,
+			],
+		)
+		time.sleep(1)  # let worker startup finish
+		self.addCleanup(self.kill_gunicorn)
+
+	def kill_gunicorn(self):
+		self.handle.send_signal(signal.SIGINT)
+		try:
+			self.handle.communicate(timeout=1)
+		except subprocess.TimeoutExpired:
+			self.handle.kill()
+
+	def test_gunicorn_ping_sync(self):
+		self.spawn_gunicorn([])
+		path = f"http://{self.TEST_SITE}:{self.port}/api/method/ping"
+		self.assertEqual(requests.get(path).status_code, 200)
+
+	def test_gunicorn_ping_gthread(self):
+		self.spawn_gunicorn(["--threads=2"])
+		path = f"http://{self.TEST_SITE}:{self.port}/api/method/ping"
+		self.assertEqual(requests.get(path).status_code, 200)
